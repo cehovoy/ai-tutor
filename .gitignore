@@ -1,0 +1,19 @@
+# .gitignore
+# Файлы IDE и ОС
+.DS_Store
+.env
+.idea/
+.vscode/
+__pycache__/
+
+# Виртуальное окружение
+venv/
+env/
+
+# Кэш и логи
+*.log
+*.tmp
+
+# Конфиги с секретами
+config.json
+secrets.*
