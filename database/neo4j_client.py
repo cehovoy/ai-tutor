@@ -3,6 +3,8 @@
 """
 from typing import Dict, List, Any, Optional, Union
 import logging
+import re
+import traceback
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError
@@ -783,22 +785,157 @@ class Neo4jClient:
         
         Args:
             chapter_title: Название главы
-            
+        
         Returns:
             Информация о главе
         """
         query = """
         MATCH (ch:Chapter {title: $chapter_title})
-        RETURN ch.title as title, ch.main_ideas as main_ideas
+        RETURN ch
         """
+        results = self.execute_query(query, {"chapter_title": chapter_title})
+        if not results:
+            return {}
+        return results[0].get("ch", {})
+
+    def get_chapters_for_concept(self, concept_name: str) -> List[str]:
+        """
+        Получение списка глав, в которых упоминается понятие
         
-        params = {
-            "chapter_title": chapter_title
-        }
-        
-        results = self.execute_query(query, params)
+        Args:
+            concept_name: Название понятия
+            
+        Returns:
+            Список названий глав
+        """
+        query = """
+        MATCH (c:Concept {name: $concept_name})-[:MENTIONED_IN]->(ch:Chapter)
+        RETURN ch.title as chapter_title
+        """
+        results = self.execute_query(query, {"concept_name": concept_name})
         
         if not results:
-            return None
+            return []
             
-        return results[0]
+        return [result["chapter_title"] for result in results]
+
+    def semantic_search(self, query: str, limit: int = 5, min_similarity: float = 0.5) -> List[Dict[str, Any]]:
+        """
+        Семантический поиск по векторным эмбеддингам в базе данных
+        
+        Args:
+            query: Текст запроса
+            limit: Максимальное количество результатов
+            min_similarity: Минимальное значение сходства (от 0 до 1)
+            
+        Returns:
+            Список релевантных понятий
+        """
+        try:
+            logger.info(f"Выполняется семантический поиск: '{query[:50]}...'")
+            
+            # 0. Предобработка запроса - удаление вводных слов и грамматических форм
+            clean_query = re.sub(r'привет\.?|здравствуйте\.?|пожалуйста\.?|не мог бы ты|расскажи о|что такое', '', query.lower(), flags=re.IGNORECASE)
+            clean_query = re.sub(r'[\.\,\!\?\;\:]', ' ', clean_query).strip()
+            # Убираем местоимения и предлоги
+            clean_query = re.sub(r'\b(я|ты|он|она|оно|мы|вы|они|и|в|на|с|к|у|о|по|из)\b', ' ', clean_query)
+            # Убираем двойные пробелы
+            clean_query = re.sub(r'\s+', ' ', clean_query).strip()
+            
+            logger.info(f"Очищенный запрос для поиска: '{clean_query}'")
+            
+            # Извлекаем ключевые слова для поиска
+            words = [word.strip() for word in clean_query.split() if len(word.strip()) > 3]
+            logger.info(f"Ключевые слова для поиска: {words}")
+            
+            # 1. Сначала попробуем найти понятие по точному совпадению имени
+            exact_match_query = """
+            MATCH (c:Concept) 
+            WHERE toLower(c.name) = toLower($query) 
+            RETURN c.name as name, c.definition as definition, c.example as example,
+                   1.0 as similarity, c.source_type as source_type, 
+                   c.credibility_score as credibility_score
+            """
+            exact_results = self.execute_query(exact_match_query, {"query": clean_query})
+            
+            if exact_results:
+                logger.info(f"Найдено точное совпадение по запросу: {clean_query}")
+                return exact_results
+            
+            # 2. Поиск по ключевым словам в имени и определении понятия
+            # Создаем WHERE условия для каждого ключевого слова
+            if not words:  # Если не удалось выделить ключевые слова, используем весь запрос
+                words = [clean_query]
+                
+            # Создаем сложное условие для поиска
+            keyword_conditions = []
+            for word in words:
+                # Проверяем и на точное совпадение слова, и на вхождение как подстроки
+                keyword_conditions.append(f"(toLower(n.name) CONTAINS toLower('{word}') OR toLower(n.definition) CONTAINS toLower('{word}'))")
+            
+            # Объединяем условия через OR
+            keyword_where = " OR ".join(keyword_conditions)
+            
+            fuzzy_match_query = f"""
+            MATCH (n:Concept)
+            WHERE {keyword_where}
+            WITH n, 
+                 CASE 
+                    WHEN {" OR ".join([f"toLower(n.name) CONTAINS toLower('{word}')" for word in words])} THEN 0.9
+                    WHEN {" OR ".join([f"toLower(n.definition) CONTAINS toLower('{word}')" for word in words])} THEN 0.7
+                    ELSE 0.5
+                 END as similarity,
+                 COALESCE(n.credibility_score, 1.0) as base_score
+            WITH n, similarity * base_score AS weighted_score, similarity
+            WHERE weighted_score >= $min_similarity
+            RETURN n.name as name, n.definition as definition, n.example as example,
+                   similarity, n.source_type as source_type, 
+                   n.credibility_score as credibility_score, weighted_score
+            ORDER BY weighted_score DESC
+            LIMIT $limit
+            """
+            
+            fuzzy_results = self.execute_query(
+                fuzzy_match_query, 
+                {"min_similarity": min_similarity, "limit": limit}
+            )
+            
+            if fuzzy_results:
+                logger.info(f"Найдено {len(fuzzy_results)} результатов по частичному совпадению для запроса: {clean_query}")
+                return fuzzy_results
+            
+            # 3. Если до сих пор ничего не нашли, пробуем поиск по частям слов (более мягкий)
+            parts_query = """
+            MATCH (n:Concept)
+            WITH n, $words AS search_words
+            WITH n, [word IN search_words WHERE 
+                 ANY(part IN split(toLower(n.name), ' ') WHERE toLower(part) CONTAINS toLower(word))
+                 OR ANY(part IN split(toLower(n.definition), ' ') WHERE toLower(part) CONTAINS toLower(word))
+            ] AS matched_words
+            WHERE size(matched_words) > 0
+            WITH n, size(matched_words)*1.0/size($words) AS match_ratio
+            WHERE match_ratio >= 0.3
+            RETURN n.name as name, n.definition as definition, n.example as example,
+                   match_ratio as similarity, n.source_type as source_type, 
+                   n.credibility_score as credibility_score, match_ratio as weighted_score
+            ORDER BY match_ratio DESC
+            LIMIT $limit
+            """
+            
+            parts_results = self.execute_query(
+                parts_query, 
+                {"words": words, "limit": limit}
+            )
+            
+            if parts_results:
+                logger.info(f"Найдено {len(parts_results)} результатов по частям слов для запроса: {clean_query}")
+                return parts_results
+                
+            # 4. Если ничего не найдено, возвращаем пустой список
+            logger.info(f"Не найдено результатов для запроса: {query}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Ошибка при выполнении семантического поиска: {str(e)}")
+            logger.error(traceback.format_exc())
+            return []

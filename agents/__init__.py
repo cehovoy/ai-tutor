@@ -1,9 +1,8 @@
 """
-Модуль агентов для AI Tutor
+Модуль, содержащий различных ассистентов для AI-репетитора
 """
 
 from ai_tutor.agents.crew import TutorCrew
-from ai_tutor.agents.assistant import CourseAssistant
-from ai_tutor.agents.tutor_assistant import TutorAssistant
+from ai_tutor.agents.unified_assistant import UnifiedAssistant, SystemicThinkingAssistant
 
-__all__ = ['TutorCrew', 'CourseAssistant', 'TutorAssistant']
+__all__ = ['TutorCrew', 'UnifiedAssistant', 'SystemicThinkingAssistant']

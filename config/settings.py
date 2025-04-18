@@ -24,8 +24,8 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 # Настройки OpenRouter API для доступа к LLM
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
-DEFAULT_MODEL = os.getenv("MODEL_NAME", "x-ai/grok-2-1212")
-GROK_MODEL = "x-ai/grok-2-1212" # Явное указание модели Grok
+DEFAULT_MODEL = os.getenv("MODEL_NAME", "x-ai/grok-3-mini-beta")
+GROK_MODEL = os.getenv("MODEL_NAME", "x-ai/grok-3-mini-beta") # Используем переменную окружения вместо жесткого значения
 
 # Настройки LLM
 TEMPERATURE = float(os.getenv("MODEL_TEMPERATURE", "0.7"))
