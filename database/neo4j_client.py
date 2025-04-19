@@ -5,11 +5,15 @@ from typing import Dict, List, Any, Optional, Union
 import logging
 import re
 import traceback
+import os
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError
 
-from ai_tutor.config.settings import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+# Заменяем импорт из ai_tutor на прямое использование переменных окружения
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
 logger = logging.getLogger(__name__)
 
@@ -785,7 +789,7 @@ class Neo4jClient:
         
         Args:
             chapter_title: Название главы
-        
+            
         Returns:
             Информация о главе
         """

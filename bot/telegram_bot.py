@@ -4,6 +4,8 @@ Telegram-бот для ИИ-репетитора
 import logging
 import asyncio
 import traceback
+import os
+import sys
 from typing import Dict, Any, Optional, Union, List
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,19 +13,23 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ApplicationBuilder
 from telegram.ext import ContextTypes, ConversationHandler, filters
 
-from ai_tutor.config.settings import TELEGRAM_TOKEN, CHAPTERS, TASK_TYPES, DIFFICULTY_LEVELS
-from ai_tutor.config.constants import MESSAGES
-from ai_tutor.agents.crew import TutorCrew
-from ai_tutor.api.openrouter import OpenRouterClient
-from ai_tutor.database.neo4j_client import Neo4jClient
-from ai_tutor.agents.unified_assistant import UnifiedAssistant
-from ai_tutor.bot.handlers import (
+# Настраиваем пути для импорта
+sys.path.append('/app')
+
+# Используем прямые импорты без префикса ai_tutor
+from config.settings import TELEGRAM_TOKEN, CHAPTERS, TASK_TYPES, DIFFICULTY_LEVELS
+from config.constants import MESSAGES
+from agents.crew import TutorCrew
+from api.openrouter import OpenRouterClient
+from database.neo4j_client import Neo4jClient
+from agents.unified_assistant import UnifiedAssistant
+from bot.handlers import (
     start_command, help_command, task_command, cancel, unknown_command,
     select_chapter, select_task_type, select_difficulty, process_answer,
     skip_task, new_task, end_session, handle_next_step
 )
-from ai_tutor.bot.conversation import get_conversation, save_conversation
-from ai_tutor.bot.keyboards import get_chapters_keyboard
+from bot.conversation import get_conversation, save_conversation
+from bot.keyboards import get_chapters_keyboard
 
 # Состояния диалога
 SELECTING_CHAPTER, SELECTING_TASK_TYPE, SELECTING_DIFFICULTY, WAITING_FOR_ANSWER, SHOW_FEEDBACK, DISCUSSION, WAITING_FOR_ASK_CHAPTER = range(7)
@@ -166,7 +172,7 @@ class TelegramBot:
         Returns:
             Обработчик диалога
         """
-        from ai_tutor.bot.handlers import (
+        from bot.handlers import (
             task_command, select_chapter, select_difficulty, select_task_type,
             process_answer, skip_task, end_session, 
             new_task, handle_next_step, handle_answer_button, cancel
@@ -198,8 +204,6 @@ class TelegramBot:
             },
             fallbacks=[CommandHandler("cancel", cancel)],
             name="conversation_handler",
-            persistent=False,
-            per_message=False
         )
     
     async def discussion_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE, return_state: int) -> int:
@@ -256,7 +260,7 @@ class TelegramBot:
             )
             
             logger.info(f"Ответ на вопрос сгенерирован через UnifiedAssistant")
-                    
+            
         except Exception as e:
             logger.error(f"Ошибка при обработке запроса к помощнику: {str(e)}")
             answer = "Извините, произошла ошибка при поиске ответа на ваш вопрос. Пожалуйста, попробуйте переформулировать или задать другой вопрос."
@@ -267,8 +271,8 @@ class TelegramBot:
         
         # Создаем клавиатуру для продолжения
         reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Новая задача", callback_data="feedback:new_task")],
-            [InlineKeyboardButton("Завершить обсуждение", callback_data="feedback:end")]
+                [InlineKeyboardButton("Новая задача", callback_data="feedback:new_task")],
+                [InlineKeyboardButton("Завершить обсуждение", callback_data="feedback:end")]
         ])
         
         # Отправляем ответ с кнопками для продолжения, используя безопасный метод
@@ -358,14 +362,32 @@ class TelegramBot:
             # Заменяем последовательности '_' на обычные пробелы
             text = re.sub(r'_{2,}', ' ', text)
             
-            # Удаляем символы форматирования Markdown
-            text = re.sub(r'[*_`]', '', text)
-            
             # Удаляем нестандартное форматирование, которое может быть в ответах LLM
             text = text.replace('**', '').replace('__', '').replace('##', '')
             
-            # Заменяем квадратные скобки на круглые (для ссылок)
-            text = text.replace('[', '(').replace(']', ')')
+            # Проверка на незакрытые теги Markdown
+            asterisk_count = text.count('*')
+            underscore_count = text.count('_')
+            backtick_count = text.count('`')
+            
+            # Если количество символов нечетное, удаляем их все для безопасности
+            if asterisk_count % 2 != 0:
+                text = text.replace('*', '')
+            if underscore_count % 2 != 0:
+                text = text.replace('_', '')
+            if backtick_count % 2 != 0:
+                text = text.replace('`', '')
+                
+            # Обрабатываем квадратные и круглые скобки (для ссылок)
+            open_square_brackets = text.count('[')
+            close_square_brackets = text.count(']')
+            open_round_brackets = text.count('(')
+            close_round_brackets = text.count(')')
+            
+            # Если количество открывающих и закрывающих скобок не совпадает, 
+            # заменяем квадратные скобки на круглые
+            if open_square_brackets != close_square_brackets or open_round_brackets != close_round_brackets:
+                text = text.replace('[', '(').replace(']', ')')
             
             # Заменяем блоки кода (```code```) на обычный текст
             text = re.sub(r'```[\s\S]*?```', lambda m: m.group(0).replace('```', ''), text)
@@ -376,13 +398,13 @@ class TelegramBot:
             # Удаляем множественные переносы строк (более 2)
             text = re.sub(r'\n{3,}', '\n\n', text)
             
-            # Для очень длинных текстов (более 2000 символов) - удаляем все специальные символы
-            # чтобы минимизировать риски проблем с разбивкой
-            if len(text) > 2000:
-                # Удаляем все символы, которые могут интерпретироваться как форматирование
-                text = re.sub(r'[#*_`~>]', '', text)
-                # Заменяем все скобки на круглые
-                text = text.replace('[', '(').replace(']', ')').replace('{', '(').replace('}', ')')
+            # Для очень длинных текстов (более 3000 символов) - удаляем только критичные символы
+            # чтобы минимизировать риски проблем с разбивкой и форматированием
+            if len(text) > 3000:
+                # Удаляем символы форматирования Markdown полностью
+                text = re.sub(r'[*_`]', '', text)
+                # Заменяем квадратные скобки на круглые (для ссылок)
+                text = text.replace('[', '(').replace(']', ')')
             
             return text
         except Exception as e:
@@ -396,224 +418,346 @@ class TelegramBot:
         Гарантирует доставку полного текста, даже если он очень большой.
         
         Args:
-            update: Объект обновления телеграм
+            update: Объект обновления телеграм (может быть update или query)
             text: Текст для отправки
             reply_markup: Опциональная клавиатура для сообщения
         
         Returns:
             Message: Объект последнего отправленного сообщения или None в случае ошибки
-
-            
         """
         sanitized_text = self.sanitize_text_for_telegram(text)
         
         if not sanitized_text:
             logging.warning("Попытка отправить пустое сообщение")
             return None
-            
-        # Максимальная длина сообщения в Telegram (с запасом)
-        max_length = 3800  # Оставляем больше запаса для заголовков частей
-        last_message = None
+        
+        # Определяем, является ли update callback_query
+        is_callback = hasattr(update, 'callback_query') and update.callback_query is not None
+        query = update.callback_query if is_callback else None
         
         try:
-            # Измеряем длину исходного текста
-            total_length = len(sanitized_text)
+            # Получаем chat_id и определяем метод отправки сообщения
+            chat_id = None
             
-            # Если текст короче максимальной длины, отправляем как есть
-            if total_length <= max_length:
-                return await update.message.reply_text(
-                    sanitized_text,
-                    reply_markup=reply_markup
-                )
+            if hasattr(update, 'effective_chat') and update.effective_chat:
+                chat_id = update.effective_chat.id
+            elif is_callback and query.message:
+                chat_id = query.message.chat_id
+            elif hasattr(update, 'message') and update.message:
+                chat_id = update.message.chat_id
             
-            # Для длинных сообщений: предупреждаем о большом объеме текста
-            notice_message = await update.message.reply_text(
-                f"Ответ получился большим (примерно {len(sanitized_text) // 1000} Кб), разбиваю на части..."
-            )
+            if not chat_id:
+                logging.error("Не удалось определить chat_id для отправки сообщения")
+                return None
             
-            logger.info(f"Разбиваем длинное сообщение на части (длина: {total_length} символов)")
+            # Уменьшаем максимальную длину для более безопасной отправки
+            MAX_MESSAGE_LENGTH = 3000
             
-            # Определяем примерное количество частей
-            estimated_parts = (total_length // max_length) + 1
+            last_message = None
             
-            # Если ответ очень большой, то используем более агрессивное разбиение
-            # по смысловым границам (абзацы, предложения)
-            if estimated_parts > 2:
-                # Используем смысловое разбиение для очень длинных ответов
-                parts = self._smart_text_split(sanitized_text, max_length, estimated_parts)
-            else:
-                # Для не очень длинных ответов делим на две части
-                half_point = len(sanitized_text) // 2
+            # Принудительное разбиение всех сообщений свыше определенной длины
+            if len(sanitized_text) > 1800:
+                logging.info(f"Сообщение длиной {len(sanitized_text)} будет разбито на части")
                 
-                # Ищем ближайший конец предложения для разделения
-                # Сначала ищем две новые строки (конец абзаца)
-                split_point = sanitized_text.find("\n\n", half_point - 200, half_point + 200)
+                # Определяем примерное количество частей
+                estimated_parts = (len(sanitized_text) // 1500) + 1
                 
-                # Если не нашли абзац, ищем конец предложения
-                if split_point == -1:
-                    # Ищем конец предложения (точка, восклицательный или вопросительный знак и пробел)
-                    for pattern in [". ", "! ", "? "]:
-                        pos = sanitized_text.find(pattern, half_point - 300, half_point + 300)
-                        if pos != -1:
-                            split_point = pos + 2  # +2 чтобы включить пунктуацию и пробел
-                            break
-                            
-                # Если всё ещё не нашли подходящее место, просто делим посередине
-                if split_point == -1:
-                    split_point = half_point
+                # Используем улучшенный метод разбиения текста с более коротким порогом
+                parts = self._smart_text_split(sanitized_text, 1500, estimated_parts)
                 
-                # Делим текст на две части
-                parts = [
-                    sanitized_text[:split_point],
-                    sanitized_text[split_point:]
-                ]
-            
-            # Отправляем части по очереди
-            for i, part in enumerate(parts):
-                try:
-                    # Клавиатуру прикрепляем только к последнему сообщению
-                    markup = reply_markup if i == len(parts) - 1 else None
-                    
-                    # Добавляем нумерацию частей, если их больше одной
+                # Отправляем каждую часть
+                for i, part in enumerate(parts):
+                    # Добавляем информацию о частях, если их больше одной
                     if len(parts) > 1:
                         part_info = f"📄 Часть {i+1} из {len(parts)} 📄\n\n"
                         if i > 0:
-                            part_info += "(Продолжение ответа)\n\n"
-                        part = part_info + part
+                            part = part_info + part
+                        else:
+                            # Для первой части информация может быть в конце, чтобы не нарушать форматирование заголовков
+                            if not part.startswith("#"):
+                                part = part_info + part
+                            else:
+                                # Ищем первый перенос строки после заголовка
+                                first_newline = part.find("\n")
+                                if first_newline > 0:
+                                    part = part[:first_newline+1] + part_info + part[first_newline+1:]
+                                else:
+                                    part = part + "\n\n" + part_info
                     
-                    last_message = await update.message.reply_text(
-                        part,
-                        reply_markup=markup
-                    )
+                    # Для каждой части дополнительно проверяем форматирование
+                    part = self.sanitize_text_for_telegram(part)
                     
-                    # Добавляем небольшую задержку между сообщениями, чтобы избежать ошибок флуда
-                    if i < len(parts) - 1:
-                        await asyncio.sleep(1.0)  # Увеличиваем задержку для большей надежности
-                        
-                except Exception as e:
-                    logging.error(f"Ошибка при отправке части сообщения {i+1}: {str(e)}")
-                    # Пытаемся отправить сообщение об ошибке
+                    # Применяем клавиатуру только к последней части
+                    current_markup = reply_markup if i == len(parts) - 1 else None
+                    
                     try:
-                        await update.message.reply_text(
-                            f"Ошибка при отправке ответа (часть {i+1}). Пожалуйста, попробуйте еще раз."
+                        # Сначала пробуем отправить с форматированием Markdown
+                        last_message = await update.get_bot().send_message(
+                            chat_id=chat_id,
+                            text=part,
+                            reply_markup=current_markup,
+                            parse_mode=ParseMode.MARKDOWN
                         )
-                    except:
-                        logging.error("Не удалось отправить сообщение об ошибке")
-            
-            # Удаляем уведомление о разбиении, если части успешно отправлены
-            try:
-                await notice_message.delete()
-            except Exception as e:
-                logger.warning(f"Не удалось удалить уведомление о разбиении: {str(e)}")
+                    except Exception as e:
+                        logging.warning(f"Ошибка при отправке с форматированием: {str(e)}")
+                        
+                        # Если ошибка форматирования, удаляем все специальные символы
+                        clean_part = re.sub(r'[*_`\[\]]', '', part)
+                        
+                        # Если не удалось с форматированием, пробуем без него
+                        last_message = await update.get_bot().send_message(
+                            chat_id=chat_id,
+                            text=clean_part,
+                            reply_markup=current_markup
+                        )
+                    
+                    # Добавляем небольшую задержку между сообщениями
+                    if i < len(parts) - 1:
+                        import asyncio
+                        await asyncio.sleep(0.3)
+            else:
+                # Если текст помещается в одно сообщение, отправляем его как есть
+                try:
+                    last_message = await update.get_bot().send_message(
+                        chat_id=chat_id,
+                        text=sanitized_text,
+                        reply_markup=reply_markup,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception as e:
+                    logging.warning(f"Ошибка при отправке с форматированием: {str(e)}")
+                    
+                    # Если ошибка форматирования, удаляем все специальные символы
+                    clean_text = re.sub(r'[*_`\[\]]', '', sanitized_text)
+                    
+                    # Если не удалось с форматированием, пробуем без него
+                    last_message = await update.get_bot().send_message(
+                        chat_id=chat_id,
+                        text=clean_text,
+                        reply_markup=reply_markup
+                    )
             
             return last_message
         except Exception as e:
             logging.error(f"Ошибка в safe_send_message: {str(e)}")
             logging.error(traceback.format_exc())
             try:
-                await update.message.reply_text(
-                    "Произошла ошибка при отправке сообщения. Пожалуйста, попробуйте еще раз."
-                )
+                if not is_callback and hasattr(update, 'message') and update.message:
+                    await update.message.reply_text(
+                        "Произошла ошибка при отправке сообщения. Пожалуйста, попробуйте еще раз."
+                    )
             except:
                 pass
             return None
-            
+    
     def _smart_text_split(self, text: str, max_length: int, estimated_parts: int) -> List[str]:
         """
-        Умное разбиение текста на части с учетом смысловых границ.
+        Умно разбивает текст на части, учитывая смысловые границы (абзацы, предложения).
         
         Args:
-            text: Исходный текст
-            max_length: Максимальная длина одной части
-            estimated_parts: Примерное количество ожидаемых частей
+            text: Исходный текст для разбиения
+            max_length: Максимальная длина каждой части
+            estimated_parts: Предполагаемое количество частей
             
         Returns:
-            Список частей текста
+            List[str]: Список частей текста
         """
-        # Если текст короткий, возвращаем его как единственную часть
+        if not text:
+            return []
+            
+        # Если текст помещается в одну часть, возвращаем его как есть
         if len(text) <= max_length:
             return [text]
             
+        # Начинаем с разбиения по абзацам (двойной перенос строки)
+        paragraphs = text.split("\n\n")
+        
+        # Если разбиение по абзацам дает достаточно частей, используем его
+        if len(paragraphs) >= estimated_parts:
+            # Группируем абзацы, чтобы получить нужное количество частей
+            return self._group_text_chunks(paragraphs, max_length)
+            
+        # Иначе разбиваем большие абзацы на предложения
+        sentences = []
+        for paragraph in paragraphs:
+            if len(paragraph) <= max_length:
+                sentences.append(paragraph)
+            else:
+                # Разбиваем большой абзац на предложения
+                # Учитываем разные знаки окончания предложения
+                for sentence_end in [". ", "! ", "? ", ".\n", "!\n", "?\n"]:
+                    paragraph = paragraph.replace(sentence_end, sentence_end + "||SPLIT||")
+                
+                paragraph_sentences = paragraph.split("||SPLIT||")
+                sentences.extend(paragraph_sentences)
+        
+        # Теперь у нас есть список предложений и небольших абзацев
+        # Убираем пустые элементы
+        sentences = [s for s in sentences if s.strip()]
+        
+        # Если разбиение по предложениям дает достаточно частей, используем его
+        if len(sentences) >= estimated_parts:
+            return self._group_text_chunks(sentences, max_length)
+            
+        # Если предыдущие методы не дали достаточно частей,
+        # разбиваем текст на примерно равные части по длине
         parts = []
         current_part = ""
         
-        # Для текстов оптимальное деление - по абзацам
-        paragraphs = text.split("\n\n")
-        
-        # Если абзацы получились очень большие, делим их на предложения
-        if any(len(p) > max_length for p in paragraphs):
-            # Сначала объединяем абзацы в более крупные блоки, но не превышающие max_length
-            blocks = []
-            current_block = ""
-            
-            for paragraph in paragraphs:
-                # Если параграф сам по себе больше максимальной длины
-                if len(paragraph) > max_length:
-                    # Если есть накопленный блок, добавляем его
-                    if current_block:
-                        blocks.append(current_block)
-                        current_block = ""
-                        
-                    # Делим длинный параграф на предложения
-                    sentences = re.split(r'(?<=[.!?])\s+', paragraph)
-                    
-                    # Группируем предложения в блоки
-                    sent_block = ""
-                    for sentence in sentences:
-                        if len(sent_block) + len(sentence) + 2 <= max_length:
-                            if sent_block:
-                                sent_block += " " + sentence
-                            else:
-                                sent_block = sentence
-                        else:
-                            blocks.append(sent_block)
-                            sent_block = sentence
-                            
-                    # Добавляем последний блок предложений
-                    if sent_block:
-                        if len(current_block) + len(sent_block) + 2 <= max_length:
-                            if current_block:
-                                current_block += "\n\n" + sent_block
-                            else:
-                                current_block = sent_block
-                        else:
-                            blocks.append(current_block)
-                            current_block = sent_block
-                else:
-                    # Если параграф помещается в текущий блок
-                    if len(current_block) + len(paragraph) + 2 <= max_length:
-                        if current_block:
-                            current_block += "\n\n" + paragraph
-                        else:
-                            current_block = paragraph
-                    else:
-                        blocks.append(current_block)
-                        current_block = paragraph
-                        
-            # Добавляем последний блок, если он есть
-            if current_block:
-                blocks.append(current_block)
-                
-            return blocks
-        else:
-            # Если абзацы не превышают максимальную длину, группируем их
-            for paragraph in paragraphs:
-                # Если абзац можно добавить к текущей части без превышения лимита
-                if len(current_part) + len(paragraph) + 2 <= max_length:
-                    if current_part:
-                        current_part += "\n\n" + paragraph
-                    else:
-                        current_part = paragraph
-                else:
-                    # Если добавление приведет к превышению, сохраняем текущую часть и начинаем новую
+        for chunk in sentences:
+            # Если текущий кусок сам по себе слишком большой
+            if len(chunk) > max_length:
+                # Если текущая часть не пуста, добавляем ее
+                if current_part:
                     parts.append(current_part)
-                    current_part = paragraph
+                    current_part = ""
+                
+                # Разбиваем большой кусок на части по max_length символов
+                # с учетом целостности строк
+                chunk_parts = self._split_large_chunk(chunk, max_length)
+                parts.extend(chunk_parts)
+            elif len(current_part) + len(chunk) + 2 <= max_length:
+                # Добавляем текущий кусок к текущей части
+                if current_part:
+                    current_part += "\n\n" + chunk
+                else:
+                    current_part = chunk
+            else:
+                # Текущая часть заполнена, начинаем новую часть
+                parts.append(current_part)
+                current_part = chunk
+        
+        # Добавляем оставшуюся часть, если она есть
+        if current_part:
+            parts.append(current_part)
+            
+        return parts
+            
+    def _group_text_chunks(self, chunks: List[str], max_length: int) -> List[str]:
+        """
+        Группирует куски текста в части, не превышающие максимальную длину.
+        
+        Args:
+            chunks: Список кусков текста (абзацы или предложения)
+            max_length: Максимальная длина каждой части
+            
+        Returns:
+            List[str]: Список частей текста
+        """
+        parts = []
+        current_part = ""
+        
+        for chunk in chunks:
+            # Если текущий кусок сам по себе слишком большой
+            if len(chunk) > max_length:
+                # Если текущая часть не пуста, добавляем ее
+                if current_part:
+                    parts.append(current_part)
+                    current_part = ""
+                
+                # Разбиваем большой кусок на части
+                chunk_parts = self._split_large_chunk(chunk, max_length)
+                parts.extend(chunk_parts)
+            # Проверяем, поместится ли текущий кусок в текущую часть
+            elif current_part and len(current_part) + len(chunk) + 2 <= max_length:
+                # Два символа для двойного переноса строки между кусками
+                current_part += "\n\n" + chunk
+            elif not current_part and len(chunk) <= max_length:
+                current_part = chunk
+            else:
+                # Текущая часть заполнена, начинаем новую часть
+                if current_part:
+                    parts.append(current_part)
+                current_part = chunk
+        
+        # Добавляем оставшуюся часть, если она есть
+        if current_part:
+            parts.append(current_part)
+            
+        return parts
+        
+    def _split_large_chunk(self, chunk: str, max_length: int) -> List[str]:
+        """
+        Разбивает большой кусок текста на части с учетом границ строк.
+        
+        Args:
+            chunk: Большой кусок текста
+            max_length: Максимальная длина каждой части
+            
+        Returns:
+            List[str]: Список частей текста
+        """
+        # Сначала пробуем разбить по строкам
+        lines = chunk.split("\n")
+        
+        # Если есть хотя бы одна строка длиннее максимальной длины
+        if any(len(line) > max_length for line in lines):
+            # Разбиваем по словам
+            parts = []
+            current_part = ""
+            
+            for line in lines:
+                if len(line) <= max_length:
+                    # Если строка помещается целиком
+                    if len(current_part) + len(line) + 1 <= max_length:
+                        # Один символ для переноса строки
+                        if current_part:
+                            current_part += "\n" + line
+                        else:
+                            current_part = line
+                    else:
+                        # Текущая часть заполнена, начинаем новую часть
+                        if current_part:
+                            parts.append(current_part)
+                        current_part = line
+                else:
+                    # Если строка не помещается целиком, разбиваем по словам
+                    words = line.split(" ")
                     
-            # Добавляем последнюю часть, если она не пуста
+                    for word in words:
+                        # Если слово само по себе слишком длинное
+                        if len(word) > max_length:
+                            # Разбиваем слово на части
+                            start = 0
+                            while start < len(word):
+                                end = start + max_length
+                                if end > len(word):
+                                    end = len(word)
+                                
+                                # Добавляем часть слова как отдельную часть
+                                if current_part:
+                                    parts.append(current_part)
+                                current_part = word[start:end]
+                                
+                                if len(current_part) == max_length:
+                                    parts.append(current_part)
+                                    current_part = ""
+                                
+                                start = end
+                        # Проверяем, поместится ли слово в текущую часть
+                        elif current_part and len(current_part) + len(word) + 1 <= max_length:
+                            # Один символ для пробела
+                            current_part += " " + word
+                        elif not current_part:
+                            current_part = word
+                        else:
+                            # Текущая часть заполнена, начинаем новую часть
+                            parts.append(current_part)
+                            current_part = word
+                    
+                    # После обработки всех слов в строке добавляем перенос строки
+                    # если это не последняя строка и есть место
+                    if current_part and len(current_part) < max_length:
+                        current_part += "\n"
+            
+            # Добавляем оставшуюся часть, если она есть
             if current_part:
                 parts.append(current_part)
                 
             return parts
+        
+        # Если длинных строк нет, группируем строки
+        return self._group_text_chunks(lines, max_length)
     
     async def safe_edit_message_text(self, query, text: str, reply_markup=None) -> None:
         """
@@ -719,8 +863,69 @@ class TelegramBot:
                 student_id=str(user_id)
             )
             
-            # Используем безопасный метод отправки сообщения
-            await self.safe_send_message(update, answer)
+            # Проверяем длину ответа
+            if len(answer) > 2000:
+                # Для очень длинных ответов принудительно удаляем Markdown-форматирование
+                logger.info(f"Получен длинный ответ ({len(answer)} символов), удаляем форматирование и разбиваем на части")
+                # Удаляем все символы форматирования Markdown
+                import re
+                answer = re.sub(r'[*_`]', '', answer)
+                answer = answer.replace('[', '(').replace(']', ')')
+            
+            # Используем безопасный метод отправки сообщения с уменьшенной максимальной длиной
+            # части сообщения для более агрессивного разбиения
+            MAX_PART_LENGTH = 1500  # Используем более короткие части сообщения
+            
+            # Получаем примерное количество частей
+            parts_count = (len(answer) // MAX_PART_LENGTH) + 1
+            
+            # Если ответ длинный, предупреждаем пользователя
+            if parts_count > 1:
+                await update.message.reply_text(
+                    f"Ответ получился большим (примерно {len(answer) // 1000} Кб), разбиваю на {parts_count} части..."
+                )
+            
+            # Используем улучшенный метод разбиения текста
+            parts = self._smart_text_split(answer, MAX_PART_LENGTH, parts_count)
+            
+            # Отправляем каждую часть отдельно
+            for i, part in enumerate(parts):
+                # Добавляем информацию о частях, если их больше одной
+                if len(parts) > 1:
+                    part_info = f"📄 Часть {i+1} из {len(parts)} 📄\n\n"
+                    if i > 0:
+                        part = part_info + part
+                    else:
+                        # Для первой части информация может быть в конце, чтобы не нарушать форматирование заголовков
+                        if not part.startswith("#"):
+                            part = part_info + part
+                        else:
+                            # Ищем первый перенос строки после заголовка
+                            first_newline = part.find("\n")
+                            if first_newline > 0:
+                                part = part[:first_newline+1] + part_info + part[first_newline+1:]
+                            else:
+                                part = part + "\n\n" + part_info
+                
+                # Для последней части добавляем клавиатуру для продолжения беседы, если это режим консультации
+                reply_markup = None
+                if i == len(parts) - 1 and context.user_data.get('consultation_mode', False):
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    reply_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Задать еще вопрос", callback_data="next_step:continue_consultation")],
+                        [InlineKeyboardButton("Завершить консультацию", callback_data="feedback:end")]
+                    ])
+                
+                try:
+                    # Отправляем часть
+                    await self.safe_send_message(update, part, reply_markup=reply_markup)
+                    
+                    # Добавляем задержку между сообщениями для избежания флуд-контроля Telegram
+                    if i < len(parts) - 1:
+                        import asyncio
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке части {i+1}: {str(e)}")
             
         except Exception as e:
             logger.error(f"Ошибка при обработке вопроса в режиме консультации: {str(e)}")
@@ -728,7 +933,7 @@ class TelegramBot:
             await update.message.reply_text(
                 "Произошла ошибка при обработке вашего вопроса. Пожалуйста, попробуйте позже."
             )
-
+    
     async def generate_task(self, student_id: str, chapter_title: str, 
                          task_type: str, difficulty: str) -> Dict[str, Any]:
         """
@@ -1130,41 +1335,31 @@ class TelegramBot:
                 # Логируем, что текст будет разбит на части
                 logger.info(f"Сообщение в callback длиной {len(safe_text)} символов будет разбито на части")
                 
-                # Разбиваем текст на логические части (параграфы)
-                parts = []
-                current_part = ""
+                # Определяем примерное количество частей, чтобы каждая была близка к максимальному размеру
+                estimated_parts = (len(safe_text) // MAX_MESSAGE_LENGTH) + 1
                 
-                # Сначала пытаемся разбить по параграфам (два переноса строки)
-                paragraphs = safe_text.split("\n\n")
-                
-                for paragraph in paragraphs:
-                    # Если параграф сам по себе слишком длинный
-                    if len(paragraph) > MAX_MESSAGE_LENGTH:
-                        # Если текущая часть не пуста, добавляем ее в список частей
-                        if current_part:
-                            parts.append(current_part)
-                            current_part = ""
-                        
-                        # Разбиваем длинный параграф на части по MAX_MESSAGE_LENGTH
-                        for i in range(0, len(paragraph), MAX_MESSAGE_LENGTH):
-                            chunk = paragraph[i:i + MAX_MESSAGE_LENGTH]
-                            parts.append(chunk)
-                    elif len(current_part + "\n\n" + paragraph) <= MAX_MESSAGE_LENGTH:
-                        # Если параграф помещается в текущую часть
-                        if current_part:
-                            current_part += "\n\n"
-                        current_part += paragraph
-                    else:
-                        # Если параграф не помещается, начинаем новую часть
-                        parts.append(current_part)
-                        current_part = paragraph
-                
-                # Добавляем последнюю часть, если она не пуста
-                if current_part:
-                    parts.append(current_part)
+                # Используем наш улучшенный метод умного разбиения текста
+                parts = self._smart_text_split(safe_text, MAX_MESSAGE_LENGTH, estimated_parts)
                 
                 # Отправляем части по очереди
                 for i, part in enumerate(parts):
+                    # Добавляем информацию о частях, если их больше одной
+                    if len(parts) > 1:
+                        part_info = f"📄 Часть {i+1} из {len(parts)} 📄\n\n"
+                        if i > 0:
+                            part = part_info + part
+                        else:
+                            # Для первой части информация может быть в конце, чтобы не нарушать форматирование заголовков
+                            if not part.startswith("#"):
+                                part = part_info + part
+                            else:
+                                # Ищем первый перенос строки после заголовка
+                                first_newline = part.find("\n")
+                                if first_newline > 0:
+                                    part = part[:first_newline+1] + part_info + part[first_newline+1:]
+                                else:
+                                    part = part + "\n\n" + part_info
+                    
                     is_last = (i == len(parts) - 1)
                     await send_message(part, is_last)
                 

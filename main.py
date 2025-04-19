@@ -7,9 +7,10 @@ import os
 import signal
 from dotenv import load_dotenv
 
-from ai_tutor.config.settings import TELEGRAM_TOKEN
-from ai_tutor.bot.telegram_bot import TelegramBot
-from ai_tutor.database.neo4j_client import Neo4jClient
+# Заменяем импорты из ai_tutor на относительные импорты
+from config.settings import TELEGRAM_TOKEN
+from bot.telegram_bot import TelegramBot
+from database.neo4j_client import Neo4jClient
 
 # Загрузка переменных окружения
 load_dotenv()

@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  # Сервис AI-репетитора
+  ai-tutor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-tutor-bot
+    restart: always
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - NEO4J_URI=bolt://localhost:17687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=testpassword
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_API_URL=${OPENROUTER_API_URL:-https://openrouter.ai/api/v1/chat/completions}
+      - MODEL_NAME=${MODEL_NAME:-x-ai/grok-3-mini-beta}
+      - MODEL_TEMPERATURE=${MODEL_TEMPERATURE:-0.7}
+      - MODEL_MAX_TOKENS=${MODEL_MAX_TOKENS:-2000}
+      - MODEL_REQUEST_TIMEOUT=${MODEL_REQUEST_TIMEOUT:-120}
+      - MAX_CONSECUTIVE_AUTO_REPLIES=${MAX_CONSECUTIVE_AUTO_REPLIES:-3}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./course.txt:/app/course.txt
+    network_mode: "host"
+
+# Используем режим host вместо bridge, чтобы контейнер мог напрямую обращаться к 
+# сервисам на хосте, включая Neo4j на порту 17687
