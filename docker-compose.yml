@@ -12,7 +12,7 @@ services:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - NEO4J_URI=bolt://localhost:17687
       - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=testpassword
+      - NEO4J_PASSWORD=
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_API_URL=${OPENROUTER_API_URL:-https://openrouter.ai/api/v1/chat/completions}
       - MODEL_NAME=${MODEL_NAME:-x-ai/grok-3-mini-beta}
